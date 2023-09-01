@@ -107,5 +107,3 @@ class FASTQFilter(Module):
         res = proc.communicate()[0].decode("utf-8")
         print(res)
 
-        # You can return 'res' or do something with it if needed.
-
