@@ -1,6 +1,7 @@
 # custom additions 
 lithops_config
 test_files/
+dockerfile/lithops_lambda.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
