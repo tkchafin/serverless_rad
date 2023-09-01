@@ -6,6 +6,11 @@ from lithops.storage import Storage
 from lithops.storage.utils import CloudObject
 
 
+def _list_remote_files(config, bucket, prefix=None):
+    storage = Storage(config=config)        
+    return storage.list_keys(bucket, prefix=prefix)
+
+
 def _cloudobject_url(cobj):
     path = f'{cobj.backend}://{cobj.bucket}/{cobj.key}'
     return path

@@ -4,6 +4,7 @@ import json
 
 import lithopsrad.utils as utils
 from lithopsrad.fastq_chunker import FASTQChunker
+from lithopsrad.fastq_filter import FASTQFilter
 
 
 def step_error_handler(step_name):
@@ -28,12 +29,19 @@ class PipelineManager:
         Execute the pipeline.
         """
         self.run_fastq_chunker()
+        self.run_fastq_filter()
 
 
     @step_error_handler("FASTQChunker")
     def run_fastq_chunker(self):
         fastq_chunker = FASTQChunker(self.lithops_config, self.runtime_config)
         fastq_chunker.run()
+    
+
+    @step_error_handler("FASTQFilter")
+    def run_fastq_filter(self):
+        fastq_filter = FASTQFilter(self.lithops_config, self.runtime_config)
+        fastq_filter.run()
 
 
     def get_params_from_json(self):
@@ -50,12 +58,19 @@ class PipelineManager:
         return config, args
 
 
+    def validate_args(self, args):
+        pass
+
+
     def set_defaults(self, args):
         """
         Set default parameters if not present in the config.
         """
         # set defaults
-        pass
+        if "tmpdir" not in args["remote_paths"]:
+            args["remote_paths"]["tmpdir"] = None
+        if "nthreads" not in args["global"]:
+            args["global"]["nthreads"] = 1
         return args
 
 

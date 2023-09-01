@@ -12,7 +12,8 @@ class FASTQChunker(Module):
         super().__init__(lithops_config, runtime_config)
         print(self.lithops_config)
         self.setup()
-    
+
+
     def setup(self):
         self.input_fastq_dir = utils.fix_dir_name(self.runtime_config["input"]["input_fastq"])
         self.fastq_chunk_size = self.runtime_config["input"]["fastq_chunk_size"]
@@ -91,7 +92,6 @@ class FASTQChunker(Module):
             "chunk_paths": chunk_paths,
             "total_records": total_records
         }
-
 
 
     @staticmethod

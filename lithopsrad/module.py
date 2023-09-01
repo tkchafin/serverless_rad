@@ -2,7 +2,6 @@ import os
 import sys 
 
 from lithops import FunctionExecutor
-from lithops.storage import Storage
 
 import lithopsrad.utils as utils
 
@@ -11,6 +10,8 @@ class Module:
         self.lithops_config = lithops_config
         self.runtime_config = runtime_config
         self.bucket = self.runtime_config["global"]["bucket"]
+        self.tmpdir = self.runtime_config["remote_paths"]["tmpdir"]
+        self.nthreads = self.runtime_config["global"]["nthreads"]
     
 
     def run(self):
@@ -19,7 +20,23 @@ class Module:
         This should be overridden by subclasses.
         """
         raise NotImplementedError("Subclasses should implement this method!")
-    
+
+
+    def list_remote_files(self, prefix=None):
+        """
+        Lists all the remote files (keys) in a specified bucket with an optional prefix.
+        
+        Args:
+        - prefix (str, optional): Key prefix for filtering the listed files. If not provided,
+                                all files in the bucket are listed.
+
+        Returns:
+        - list[str]: A list of object keys (file names) present in the specified bucket, filtered
+                    by the provided prefix if any.
+        """
+        return utils._list_remote_files(self.lithops_config, self.bucket, prefix)
+
+
 
     def upload_file(self, remote_path, local_path, overwrite=True):
         """
