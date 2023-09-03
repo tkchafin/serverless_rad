@@ -3,6 +3,13 @@ import sys
 import re
 
 
+def check_fastq(file_path):
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+        if len(lines) % 4 != 0:
+            raise ValueError(f"File {file_path} doesn't appear to be a valid FASTQ file.")
+
+
 def count_fastq_from_stream(file_data):
     lines = file_data.split("\n")
     total_lines = len(lines) - lines.count('')  # Subtracting empty lines

@@ -1,6 +1,7 @@
 import os 
 import sys 
 
+import pandas as pd 
 from lithops import FunctionExecutor
 
 from lithopsrad.module import Module
@@ -25,8 +26,31 @@ class FASTQChunker(Module):
 
         self.overwrite_fastq = self.runtime_config["input"]["overwrite_fastq"]
         self.overwrite_chunks = self.runtime_config["input"]["overwrite_chunks"]
-    
 
+
+    def validate(self):
+
+        # check dir exists/ is readable 
+        utils.check_file(self.input_fastq_dir)
+
+        # get list of files, make sure isn't empty 
+        local_files = [os.path.join(self.input_fastq_dir, file) for file in os.listdir(self.input_fastq_dir) if "R2" not in file]
+        if not local_files:
+            raise ValueError(f"No valid files found in the directory {self.input_fastq_dir}. Ensure that the files don't contain 'R2' in their names.")
+
+        for file in local_files:
+            # check if file exists/ is readable 
+            utils.check_file(file)
+
+            # check if it is possible fastq
+            seq.check_fastq(file)
+
+            # check if file is gzip 
+            if utils.is_gzip(file):
+                raise ValueError(f"File {file} appears to be a gzip compressed file, which is not supported.")
+            
+
+    @Module.time_it
     def run(self):
         # Upload local fastq files to bucket
         local_files = [os.path.join(self.input_fastq_dir, file) for file in os.listdir(self.input_fastq_dir) if "R2" not in file]
@@ -49,6 +73,9 @@ class FASTQChunker(Module):
 
             # check that record counts match after chunking 
             self._validate_chunks(results, local_files)
+        
+        print(results)
+        self._results = results
     
 
     def _validate_chunks(self, results, local_files):
@@ -86,10 +113,12 @@ class FASTQChunker(Module):
         chunk_paths = [item["chunk_path"] for item in results]
         chunks = [item["chunk"] for item in results]
         total_records = sum(res["record_count"] for res in results)
+        sizes = [res["record_count"] for res in results]
         return {
             "sample": original_key,
             "chunks": chunks,
             "chunk_paths": chunk_paths,
+            "chunk_sizes" : sizes,
             "total_records": total_records
         }
 
@@ -113,5 +142,38 @@ class FASTQChunker(Module):
             "record_count": record_count
         }
 
+
+    def _get_result_as_df(self):
+        # Check if _results is empty
+        if not self._results:
+            return None
+        # Check if _results is already a DataFrame
+        if isinstance(self._results, pd.DataFrame):
+            return self._results
+
+        all_data = []
+
+        # Iterate over each dictionary in the list
+        for item in self._results:
+            sample = item['sample']
+
+            # The key seems to be 'num_chunks' based on the example you provided.
+            # Change it to 'chunks' if that's the correct key name in your dataset.
+            chunks = item['chunks'] 
+
+            # Fetch the sizes, and default to None if sizes are not provided.
+            sizes = item.get('chunk_sizes', [None] * len(chunks))
+
+            # Iterate over each chunk and its corresponding size
+            for chunk, size in zip(chunks, sizes):
+                all_data.append({
+                    'sample': sample,
+                    'chunk': chunk,
+                    'size': size
+                })
+
+        # Transform the list of dictionaries into a DataFrame
+        self._results = pd.DataFrame(all_data)
+        return self._results
 
 

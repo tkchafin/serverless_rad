@@ -3,15 +3,29 @@ import sys
 import json
 
 import lithopsrad.utils as utils
+
+# import modules 
 from lithopsrad.fastq_chunker import FASTQChunker
 from lithopsrad.fastq_filter import FASTQFilter
+from lithopsrad.fastq_derep import FASTQDerep
 
 
-def step_error_handler(step_name):
+def step_handler(step_name):
     def decorator(func):
-        def wrapper(*args, **kwargs):
+        def wrapper(self, *args, **kwargs): 
             try:
-                return func(*args, **kwargs)
+                # Obtain the module instance from the decorated function.
+                module = func(self, *args, **kwargs)
+
+                # Run the module.
+                module.run()
+
+                # Store the result in the results dictionary.
+                self.results[step_name] = module.result
+
+                # Return the module instance.
+                return module
+
             except Exception as e:
                 print(f"Pipeline execution failed during {step_name}: {str(e)}")
         return wrapper
@@ -22,6 +36,7 @@ class PipelineManager:
     def __init__(self, config_file="lithops_config"):
         self.config_file = config_file
         self.lithops_config, self.runtime_config = self.get_params_from_json()
+        self.results = {}  # This will store the results of each module.
 
 
     def run(self):
@@ -30,18 +45,33 @@ class PipelineManager:
         """
         self.run_fastq_chunker()
         self.run_fastq_filter()
+        #self.run_fastq_derep()
+
+        print(self.results["FASTQChunker"])
 
 
-    @step_error_handler("FASTQChunker")
+    @step_handler("FASTQChunker")
     def run_fastq_chunker(self):
-        fastq_chunker = FASTQChunker(self.lithops_config, self.runtime_config)
-        fastq_chunker.run()
-    
+        # Instantiate and validate.
+        module = FASTQChunker(self.lithops_config, self.runtime_config)
+        module.validate()
+        return module
+        
 
-    @step_error_handler("FASTQFilter")
+    @step_handler("FASTQFilter")
     def run_fastq_filter(self):
-        fastq_filter = FASTQFilter(self.lithops_config, self.runtime_config)
-        fastq_filter.run()
+        # Instantiate and validate.
+        module = FASTQFilter(self.lithops_config, self.runtime_config)
+        module.validate()
+        return module
+
+
+    @step_handler("FASTQDerep")
+    def run_fastq_derep(self):
+        # Instantiate and validate.
+        module = FASTQDerep(self.lithops_config, self.runtime_config)
+        module.validate()
+        return module
 
 
     def get_params_from_json(self):
@@ -72,6 +102,4 @@ class PipelineManager:
         if "nthreads" not in args["global"]:
             args["global"]["nthreads"] = 1
         return args
-
-
 

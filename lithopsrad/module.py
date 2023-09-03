@@ -1,6 +1,7 @@
 import os 
 import sys 
-
+import time 
+import pandas as pd 
 from lithops import FunctionExecutor
 
 import lithopsrad.utils as utils
@@ -9,10 +10,19 @@ class Module:
     def __init__(self, lithops_config, runtime_config):
         self.lithops_config = lithops_config
         self.runtime_config = runtime_config
+        self.runtime = -1
+        self._results = None
         self.bucket = self.runtime_config["global"]["bucket"]
         self.tmpdir = self.runtime_config["remote_paths"]["tmpdir"]
         self.nthreads = self.runtime_config["global"]["nthreads"]
-    
+
+
+    def validate(self):
+        """
+        Validate inputs
+        """
+        raise NotImplementedError("Subclasses should implement this method!")
+
 
     def run(self):
         """
@@ -20,6 +30,32 @@ class Module:
         This should be overridden by subclasses.
         """
         raise NotImplementedError("Subclasses should implement this method!")
+
+
+    @property
+    def result(self):
+        return self._get_result_as_df()
+
+
+    def _get_result_as_df(self):
+        # If results is None, return None
+        if self._results is None:
+            return None
+
+        # If results is already a DataFrame, return it
+        if isinstance(self._results, pd.DataFrame):
+            return self._results
+
+        # If results is a list, convert to DataFrame
+        if isinstance(self._results, list):
+            return pd.DataFrame(self._results)
+
+        # If results is a dict, convert to DataFrame
+        if isinstance(self._results, dict):
+            return pd.DataFrame([self._results])
+
+        # You can expand for other data types or add an error for unsupported types
+        raise ValueError(f"Unsupported data type: {type(self._results)}")
 
 
     def list_remote_files(self, prefix=None):
@@ -36,6 +72,19 @@ class Module:
         """
         return utils._list_remote_files(self.lithops_config, self.bucket, prefix)
 
+
+    def check_remote_files(self, prefix, subset=3):
+        """
+        Check if a subset of remote files under a given prefix is reachable.
+
+        Args:
+        - prefix (str): The prefix under which to check the files.
+        - subset (int, optional): Number of files to check. Defaults to 3.
+
+        Returns:
+        - List of files that were checked.
+        """
+        return utils._check_remote_files(self.lithops_config, self.bucket, prefix, subset)
 
 
     def upload_file(self, remote_path, local_path, overwrite=True):
@@ -101,3 +150,15 @@ class Module:
         - str: Next line from the file.
         """
         yield from utils._stream_file(self.lithops_config, self.bucket, remote_path)
+    
+
+    @staticmethod
+    def time_it(func):
+        def wrapper(*args, **kwargs):
+            start = time.time()
+            result = func(*args, **kwargs)
+            end = time.time()
+            # Store the runtime in the instance (args[0] is 'self' for class methods)
+            args[0].runtime = end - start
+            return result
+        return wrapper
