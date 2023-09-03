@@ -8,7 +8,7 @@ import pandas as pd
 from lithopsrad.fastq_chunker import FASTQChunker
 from lithopsrad.fastq_filter import FASTQFilter
 from lithopsrad.fastq_derep import FASTQDerep
-
+from lithopsrad.cluster_map import ClusterMap
 
 def step_handler(step_name):
     def decorator(func):
@@ -47,6 +47,19 @@ class PipelineManager:
         self.run_fastq_filter()
         self.run_fastq_derep()
 
+        self.run_clust_within()
+
+        # clustermap
+        # clustermerge 
+        # clusterfilter 
+
+        #clustermap, among
+        #clustermerge, among 
+        
+        # alignment
+        # calling 
+        # locus/catalog filter 
+
 
         merged_df = self.results["FASTQChunker"]
         for step, result in self.results.items():
@@ -58,7 +71,6 @@ class PipelineManager:
 
     @step_handler("FASTQChunker")
     def run_fastq_chunker(self):
-        # Instantiate and validate.
         module = FASTQChunker(self.lithops_config, self.runtime_config)
         module.validate()
         return module
@@ -66,7 +78,6 @@ class PipelineManager:
 
     @step_handler("FASTQFilter")
     def run_fastq_filter(self):
-        # Instantiate and validate.
         module = FASTQFilter(self.lithops_config, self.runtime_config)
         module.validate()
         return module
@@ -74,10 +85,16 @@ class PipelineManager:
 
     @step_handler("FASTQDerep")
     def run_fastq_derep(self):
-        # Instantiate and validate.
         module = FASTQDerep(self.lithops_config, self.runtime_config)
         module.validate()
         return module
+    
+    @step_handler("ClusterMapWithin")
+    def run_clust_within(self):
+        module = ClusterMap(self.lithops_config, self.runtime_config, mode="clust_within")
+        module.validate()
+        return module
+
 
 
     def get_params_from_json(self):

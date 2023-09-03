@@ -3,6 +3,46 @@ import sys
 import re
 
 
+def write_fasta(seqs, fas):
+    with open(fas, 'w') as fh:
+        try:
+            for a in seqs:
+                line = ">" + str(a[0]) + "\n" + a[1] + "\n"
+                fh.write(line)
+        except IOError as e:
+            print("Could not read file:",e)
+            sys.exit(1)
+        except Exception as e:
+            print("Unexpected error:",e)
+            sys.exit(1)
+
+
+def read_fasta(fas):
+    with open(fas, "r") as file_object:
+        contig = None
+        seq = ""
+        for line in file_object:
+            line = line.strip()
+            if not line:
+                continue
+            line = line.replace(" ","")
+            #print(line)
+            if line[0] == ">": #Found a header line
+                #If we already loaded a contig, yield that contig and
+                #start loading a new one
+                if contig:
+                    yield([contig,seq]) #yield
+                    contig = None #reset contig and seq
+                    seq = ""
+                else:
+                    contig = (line.replace(">",""))
+                    seq = ""
+            else:
+                seq += line
+        #yield last sequence, if it has both a header and sequence
+        if contig and seq:
+            yield([contig,seq])
+
 def check_fastq(file_path):
     with open(file_path, 'r') as f:
         lines = f.readlines()
