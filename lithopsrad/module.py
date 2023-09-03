@@ -6,30 +6,77 @@ from lithops import FunctionExecutor
 
 import lithopsrad.utils as utils
 
+
+def time_it(func):
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        # Store the runtime in the instance (args[0] is 'self' for class methods)
+        args[0].runtime = end - start
+        return result
+    return wrapper
+
 class Module:
     def __init__(self, lithops_config, runtime_config):
+        # globally required attributes 
         self.lithops_config = lithops_config
         self.runtime_config = runtime_config
-        self.runtime = -1
-        self._results = None
         self.bucket = self.runtime_config["global"]["bucket"]
         self.tmpdir = self.runtime_config["remote_paths"]["tmpdir"]
         self.nthreads = self.runtime_config["global"]["nthreads"]
 
+        # placeholders, should be defined in submodules 
+        self.runtime = -1
+        self.input_path = None
+        self.output_path = None
+        self._results = None
+        self._func = None
+        self._reduce_func = None
+
 
     def validate(self):
-        """
-        Validate inputs
-        """
-        raise NotImplementedError("Subclasses should implement this method!")
+        # Check if the bucket in which the chunks reside exists and is accessible.
+        utils.check_bucket(self.lithops_config, self.bucket)
+
+        # Check if the list of remote files is non-empty.
+        chunks = self.list_remote_files(self.input_path)
+        if not chunks:
+            raise ValueError(f"No files found in {self.input_path}")
+
+        # check remote files are accessible (only checking a subset of them)
+        self.check_remote_files(self.input_path, subset=3)
 
 
+    @time_it
     def run(self):
-        """
-        Method that implements the main functionality of the module.
-        This should be overridden by subclasses.
-        """
-        raise NotImplementedError("Subclasses should implement this method!")
+        # Check if _func is set
+        if not self._func:
+            raise NotImplementedError("Function to run not set for this module.")
+
+        # get chunks to process 
+        chunks = self.list_remote_files(self.input_path)
+
+        # create iterdata 
+        iterdata = [self._get_iterdata(chunk) for chunk in chunks]
+
+        # run the function on each chunk
+        with FunctionExecutor(config=self.lithops_config) as fexec:
+            fexec.map(self._func, iterdata)
+            results = fexec.get_result()
+            self._results = results
+
+
+    def _get_iterdata(self, obj):
+        cloud_path = utils._get_cloudobject(self.lithops_config, self.bucket, obj)
+        data = {
+            "obj": cloud_path,
+            "config": self.lithops_config,
+            "bucket": self.bucket,
+            "remote_path": self.output_path,
+            "tmpdir": self.tmpdir
+        }
+        return data
 
 
     @property
@@ -151,14 +198,3 @@ class Module:
         """
         yield from utils._stream_file(self.lithops_config, self.bucket, remote_path)
     
-
-    @staticmethod
-    def time_it(func):
-        def wrapper(*args, **kwargs):
-            start = time.time()
-            result = func(*args, **kwargs)
-            end = time.time()
-            # Store the runtime in the instance (args[0] is 'self' for class methods)
-            args[0].runtime = end - start
-            return result
-        return wrapper

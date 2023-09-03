@@ -4,7 +4,7 @@ import sys
 import pandas as pd 
 from lithops import FunctionExecutor
 
-from lithopsrad.module import Module
+from lithopsrad.module import Module, time_it
 import lithopsrad.sequence as seq
 import lithopsrad.utils as utils
 
@@ -22,14 +22,18 @@ class FASTQChunker(Module):
 
         self.run_path = utils.fix_dir_name(self.runtime_config["remote_paths"]["run_path"])
         self.fastq_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["fastq_path"]))
-        self.fastq_chunks_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["fastq_chunks"]))
+        self.output_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["fastq_chunks"]))
 
         self.overwrite_fastq = self.runtime_config["input"]["overwrite_fastq"]
         self.overwrite_chunks = self.runtime_config["input"]["overwrite_chunks"]
 
+         # define map function 
+        self._func = FASTQChunker._chunk_fastq
+        self._reduce_func = FASTQChunker._chunk_fastq_reducer
 
+
+    # overload Module validate 
     def validate(self):
-
         # check dir exists/ is readable 
         utils.check_file(self.input_fastq_dir)
 
@@ -50,7 +54,8 @@ class FASTQChunker(Module):
                 raise ValueError(f"File {file} appears to be a gzip compressed file, which is not supported.")
             
 
-    @Module.time_it
+    # overload Module run 
+    @time_it
     def run(self):
         # Upload local fastq files to bucket
         local_files = [os.path.join(self.input_fastq_dir, file) for file in os.listdir(self.input_fastq_dir) if "R2" not in file]
@@ -62,9 +67,9 @@ class FASTQChunker(Module):
 
         # Chunk files w map_reduce              <-- (Currently ignores R2 reads)
         with FunctionExecutor(config=self.lithops_config) as fexec:
-            fexec.map_reduce(FASTQChunker._chunk_fastq, 
+            fexec.map_reduce(self._func, 
                              cloud_paths, 
-                             FASTQChunker._chunk_fastq_reducer,
+                             self._reduce_func,
                              chunksize=1,
                              obj_reduce_by_key=True,
                              obj_chunk_size=self.fastq_chunk_size, 
@@ -73,15 +78,21 @@ class FASTQChunker(Module):
 
             # check that record counts match after chunking 
             self._validate_chunks(results, local_files)
-        
-        print(results)
-        self._results = results
-    
+            self._results = results
+
+
+    def _get_iterdata(self, obj):
+        data = super()._get_iterdata(obj)
+        data.update({
+            "obj": obj,
+        })
+        return data
+
 
     def _validate_chunks(self, results, local_files):
         for local_file in local_files:
             # Obtain the base name of the local file
-            base_name = os.path.basename(local_file)
+            base_name = os.path.basename(os.path.splitext(local_file)[0])
 
             # Count the FASTQ records in the local file
             local_records_count = seq.count_fastq_records(file_path=local_file)
@@ -91,31 +102,21 @@ class FASTQChunker(Module):
 
             if matching_sample:
                 if matching_sample["total_records"] != local_records_count:
-                    print(f"Error: {base_name} has a mismatch in record counts. Local: {local_records_count}, Chunks: {matching_sample['total_records']}.")
+                    raise ValueError(f"{base_name} has a mismatch in record counts. Local: {local_records_count}, Chunks: {matching_sample['total_records']}.")
             else:
-                print(f"Error: {base_name} not found in results.")
-
-
-    def _get_iterdata(self, obj):
-        data = {
-            "obj": obj,
-            "config": self.lithops_config,
-            "bucket": self.bucket,
-            "remote_path": self.fastq_chunks_path
-        }
-        return data
+                raise ValueError(f"{base_name} not found in results.")
 
 
     @staticmethod
     def _chunk_fastq_reducer(results):
         # assumed map_reduce was called with obj_reduce_by_key=True
-        original_key = results[0]['original_key']
+        sample_id = os.path.basename(os.path.splitext(results[0]['original_key'])[0])
         chunk_paths = [item["chunk_path"] for item in results]
         chunks = [item["chunk"] for item in results]
         total_records = sum(res["record_count"] for res in results)
         sizes = [res["record_count"] for res in results]
         return {
-            "sample": original_key,
+            "sample": sample_id,
             "chunks": chunks,
             "chunk_paths": chunk_paths,
             "chunk_sizes" : sizes,
@@ -124,7 +125,7 @@ class FASTQChunker(Module):
 
 
     @staticmethod
-    def _chunk_fastq(obj, config, bucket, remote_path):
+    def _chunk_fastq(obj, config, bucket, remote_path, tmpdir=None):
 
         # Reading and counting the records
         data = obj.data_stream.read().decode('utf-8')
@@ -135,10 +136,11 @@ class FASTQChunker(Module):
         new_remote_path = os.path.join(remote_path, f"{obj.part}_{base_name}")
         chunk_cobj = utils._upload_file_from_stream(config, bucket, new_remote_path, data)
 
+        chunk_id = os.path.basename(os.path.splitext(new_remote_path)[0])
         return {
             "original_key": os.path.basename(obj.key),
             "chunk_path": new_remote_path,
-            "chunk": os.path.basename(new_remote_path),
+            "chunk": chunk_id,
             "record_count": record_count
         }
 
@@ -157,8 +159,6 @@ class FASTQChunker(Module):
         for item in self._results:
             sample = item['sample']
 
-            # The key seems to be 'num_chunks' based on the example you provided.
-            # Change it to 'chunks' if that's the correct key name in your dataset.
             chunks = item['chunks'] 
 
             # Fetch the sizes, and default to None if sizes are not provided.

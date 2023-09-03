@@ -1,8 +1,8 @@
 import os 
 import sys
-import json
 
-import lithopsrad.utils as utils
+import json
+import pandas as pd 
 
 # import modules 
 from lithopsrad.fastq_chunker import FASTQChunker
@@ -45,9 +45,15 @@ class PipelineManager:
         """
         self.run_fastq_chunker()
         self.run_fastq_filter()
-        #self.run_fastq_derep()
+        self.run_fastq_derep()
 
-        print(self.results["FASTQChunker"])
+
+        merged_df = self.results["FASTQChunker"]
+        for step, result in self.results.items():
+            if step != "FASTQChunker":  # as we've already initialized with this
+                merged_df = pd.merge(merged_df, result, on="chunk", how="outer")
+
+        print(merged_df)
 
 
     @step_handler("FASTQChunker")

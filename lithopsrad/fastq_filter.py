@@ -17,8 +17,8 @@ class FASTQFilter(Module):
     def setup(self):
         # Remote paths 
         self.run_path = utils.fix_dir_name(self.runtime_config["remote_paths"]["run_path"])
-        self.fastq_chunks_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["fastq_chunks"]))
-        self.fastq_edits_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["fastq_chunks"]))
+        self.input_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["fastq_chunks"]))
+        self.output_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["fastq_edits"]))
 
         # runtime params for edit step 
         self.minlen = self.runtime_config["edit"]["minlen"]
@@ -26,51 +26,20 @@ class FASTQFilter(Module):
         self.maxns = self.runtime_config["edit"]["maxns"]
         self.maxee = self.runtime_config["edit"]["maxee"]
         self.maxee_rate = self.runtime_config["edit"]["maxee_rate"]
-    
 
-    def validate(self):
-        # Check if the bucket in which the chunks reside exists and is accessible.
-        utils.check_bucket(self.lithops_config, self.bucket)
-
-        # Check if the list of remote files is non-empty.
-        chunks = self.list_remote_files(self.fastq_chunks_path)
-        if not chunks:
-            raise ValueError(f"No files found in {self.fastq_chunks_path}")
-
-        # check remote files are accessible (only checking a subset of them)
-        self.check_remote_files(self.fastq_chunks_path, subset=3)
-
-
-    @Module.time_it
-    def run(self):
-        # get chunks to process 
-        chunks = self.list_remote_files(self.fastq_chunks_path)
-
-        # create iterdata 
-        iterdata = [self._get_iterdata(chunk) for chunk in chunks]
-
-        # run filter on each chunk
-        with FunctionExecutor(config=self.lithops_config) as fexec:
-            # Passing the attributes as arguments
-            fexec.map(FASTQFilter._filter_fastq, iterdata)
-            results = fexec.get_result()
-            # TODO: Parse filtered chunks and return back sizes for logging 
+        # define map function 
+        self._func = FASTQFilter._filter_fastq
 
 
     def _get_iterdata(self, obj):
-        cloud_path = utils._get_cloudobject(self.lithops_config, self.bucket, obj)
-        data = {
-            "obj": cloud_path,
-            "config": self.lithops_config,
-            "bucket": self.bucket,
-            "remote_path": self.fastq_edits_path,
+        data = super()._get_iterdata(obj)
+        data.update({
             "minlen": self.minlen,
             "truncqual": self.truncqual,
             "maxns": self.maxns,
             "maxee": self.maxee,
-            "maxee_rate": self.maxee_rate,
-            "tmpdir": self.tmpdir
-        }
+            "maxee_rate": self.maxee_rate
+        })
         return data
 
 
@@ -87,7 +56,7 @@ class FASTQFilter(Module):
 
         prefix = os.path.splitext(tmp_path)[0]
         base = os.path.basename(prefix)
-        fout = prefix + ".temp.edit"
+        fout = base + ".edit"
 
         # 2. Filter using vsearch
         cmd = [
@@ -116,10 +85,11 @@ class FASTQFilter(Module):
         filtered_records = seq.count_fastq_records(file_path=fout)
 
         # 5. Clean up and return results 
+        chunk_id = os.path.basename(os.path.splitext(fastq)[0])
         os.remove(fout)
         return {
-            "chunk_path": fastq,
-            "filter_path": filter_path,
-            "filtered_records": filtered_records
+            "chunk": chunk_id,
+            #"filter_path": filter_path,
+            "filtered_size": filtered_records
         }
 
