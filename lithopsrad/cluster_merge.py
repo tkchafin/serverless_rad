@@ -1,47 +1,311 @@
-"""
-TODO: Multiple issues here (1) with large numbers of chunks
-the file names can get really large; (2) mmseqs on localhost
-can have conflicts trying to create intermediate databases, so
-add a random identifier for each left-right pair here, which
-will be used to name the outputs in the reducer 
-"""
-def binary_reducer_iterdata(queue):
-	iterdata = list()
-	kept = list()
-	samples=dict()
-	for item in queue:
-		#print(item)
-		if item["sample"] not in samples:
-			samples[item["sample"]] = list()
-		samples[item["sample"]].append(item)
-	for sample in samples:
-		while len(samples[sample]) > 1:
-			iterdata.append({"left" : samples[sample].pop(0), "right" : samples[sample].pop(0)})
-		if len(samples[sample]) > 0:
-			kept.append(samples[sample].pop())
-	return(kept, iterdata)
+import os 
+import sys 
+import tempfile
+import subprocess as sp 
+import shutil
+import hashlib
+from collections import defaultdict
+from itertools import chain
+from lithops import FunctionExecutor
 
-def make_merged_hits_table(left_hits, right_hits, infile, outfile):
-	# get hit dicts for left, right, and joined outputs
-	left_members = read_hits(left_hits)
-	right_members = read_hits(right_hits)
-	intermediate_hits = parse_hits(infile)
+from lithopsrad.module import Module
+import lithopsrad.sequence as seq
+import lithopsrad.utils as utils
+import lithopsrad.mmseqs_utils as mmseqs_utils
 
-	joined_hits=dict()
+class ClusterMerge(Module):
+    def __init__(self, lithops_config, runtime_config, mode="clust_within"):
+        super().__init__(lithops_config, runtime_config)
+        self.setup(mode)
 
-	# grab constitutents for each centroid involved in a hit
-	for int_hit in intermediate_hits:
-		centroids=intermediate_hits[int_hit]
-		joined_hits[int_hit] = centroids
-		if int_hit in left_members:
-			joined_hits[int_hit].extend(left_members[int_hit])
-		if int_hit in right_members:
-			joined_hits[int_hit].extend(right_members[int_hit])
-		for c in centroids:
-			if c in left_members:
-				joined_hits[int_hit].extend(left_members[c])
-			if c in right_members:
-				joined_hits[int_hit].extend(right_members[c])
-	#print(joined_hits)
-	write_hits(joined_hits, outfile)
-	return(joined_hits)
+
+    def setup(self, mode="clust_within"):
+        # Remote paths 
+        self.run_path = utils.fix_dir_name(self.runtime_config["remote_paths"]["run_path"])
+        self.input_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["clust"]))
+        self.output_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["clust"]))
+
+        # runtime params for cluster_map 
+        self.cov = self.runtime_config[mode]["cov"]
+        self.id = self.runtime_config[mode]["id"]
+        self.cov_mode = self.runtime_config[mode]["cov_mode"]
+        self.mask = self.runtime_config[mode]["mask"]
+        self.mask_lower_case = self.runtime_config[mode]["mask-lower-case"]
+        self.threads = self.runtime_config["global"]["nthreads"]
+
+        # define function to run 
+        self._func = ClusterMerge._cluster_merge_pair
+
+
+    def _get_iterdata(self, obj):
+        data = super()._get_iterdata(obj)
+        data.update({
+            "cov": self.cov,
+            "identity": self.id,
+            "cov_mode": self.cov_mode,
+            "mask": self.mask,
+            "mask_lower_case": self.mask_lower_case,
+            "threads": self.threads
+        })
+        chunk = os.path.basename(os.path.splitext(os.path.basename(obj))[0]).replace(".temp", "")
+        print(chunk)
+        try:
+            chunk_id, sample = chunk.split("_", 1)
+        except:
+            chunk_id = chunk
+            sample = chunk
+        print(chunk_id)
+        print(sample)
+        data.update({
+            "chunk": chunk, 
+            "chunk_id": chunk_id,
+            "sample": sample
+        })
+        return data
+    
+
+    def _results_to_iterdata(self, results):
+        """
+        Formats the provided results into iterdata format and returns it.
+
+        Args:
+        - results (list[dict]): The results, typically a list of dictionaries.
+
+        Returns:
+        - list[dict]: A list of formatted iterdata.
+        """
+        formatted_iterdata = []
+        for item in results:
+            obj = item['hits_temp_path']
+            data = super()._get_iterdata(obj)
+            data.update({
+                "cov": self.cov,
+                "identity": self.id,
+                "cov_mode": self.cov_mode,
+                "mask": self.mask,
+                "mask_lower_case": self.mask_lower_case,
+                "threads": self.threads,
+                "chunk": item['chunk'],
+                "chunk_id": item['chunk_id'],
+                "sample": item['sample'],
+                "mean_depth_merged": item['mean_depth_merged'],
+                "clusters_merged": item['clusters_merged'], 
+                "hits_temp_path" : item["hits_temp_path"],
+                "centroid_temp_path" : item["centroid_temp_path"]
+            })
+            formatted_iterdata.append(data)
+        return formatted_iterdata
+
+
+    def run(self):
+        # Check if _func is set
+        if not self._func:
+            raise NotImplementedError("Function to run not set for this module.")
+
+        # get chunks to process 
+        chunks = self.list_remote_files(self.input_path)
+        # create iterdata 
+        iterdata = [self._get_iterdata(chunk) for chunk in chunks if "temp" in str(chunk) and "hits" in str(chunk)]
+        num_samples = len(set(data['sample'] for data in iterdata))
+
+        # Limit the iterdata to pairs for binary reduction and keep track of remaining pairs to be processed
+        queue, pairs = self._binary_reducer_iterdata(iterdata)
+
+        # run the function until all chunks reduced
+        with FunctionExecutor(config=self.lithops_config) as fexec:
+            while pairs:
+                # generate unique id for filenames 
+                for pair in pairs:
+                    pair['pair_id'] = self._generate_filename(str(pair['left_obj']['chunk']) + str(pair['right_obj']['chunk']))
+
+                fexec.map(self._func, pairs)
+                results = fexec.get_result()
+
+                # Add returned results to queue
+                new_iterdata = self._results_to_iterdata(results)
+                queue.extend(new_iterdata)
+
+                # update queue 
+                queue, pairs = self._binary_reducer_iterdata(queue)
+
+                # if no pairs, exit loop
+        
+        # Check the number of result items
+        if len(queue) != num_samples:
+            raise Exception(f"Expected number of result items to be {num_samples}, but got {len(results)}")
+
+        # Change file names
+        for item in queue:
+            centroid_new_path = os.path.join(self.output_path, f"{item['sample']}.centroids")
+            hits_new_path = os.path.join(self.output_path, f"{item['sample']}.hits")
+            #TODO: Need to handle the case that a sample was only a single chunk here!!
+            self.rename_file(item["centroid_temp_path"], centroid_new_path)
+            self.rename_file(item["hits_temp_path"], hits_new_path)
+
+        # Format results table
+        formatted_results = [{"sample": item["sample"],
+                            "mean_depth_merged": item["mean_depth_merged"],
+                            "clusters_merged": item["clusters_merged"]} for item in queue]
+        self._results = formatted_results
+
+    def _generate_filename(self, input, length=15):
+        """Generate a unique filename based on SHA-1 hashing."""
+        hashed_name = hashlib.sha1(str(input).encode()).hexdigest()[:length]
+        return f"{hashed_name}"
+
+    def _binary_reducer_iterdata(self, queue):
+        print("BINARY_REDUCER")
+        iterdata = []
+        kept = []
+        samples = {}
+        for item in queue:
+            if item["sample"] not in samples:
+                samples[item["sample"]] = []
+            samples[item["sample"]].append(item)
+        print("Queue:")
+        for key in samples.keys():
+            print(key,":", len(samples[key]))
+        for sample in samples:
+            while len(samples[sample]) > 1:
+                iterdata.append({
+                    "left_obj": samples[sample].pop(0),
+                    "right_obj": samples[sample].pop(0)
+                })
+            if len(samples[sample]) > 0:
+                kept.append(samples[sample].pop())
+        print("Pairs in work queue:", len(iterdata))
+        print("Chunks remaining:", len(kept))
+        print()
+        return kept, iterdata
+
+
+# !!!TODO!!!
+# Still something wrong, seems like there are centroids that aren't making it into the _rep_seq file from mmseqs
+# May have to manually parse the left/right centroids and make sure everything makes it into the output file 
+
+
+    @staticmethod 
+    def _cluster_merge_pair(left_obj, right_obj, pair_id):
+
+        print(left_obj)
+        print(right_obj)
+
+        # Extract main parameters from left_obj
+        config = left_obj["config"]
+        bucket = left_obj["bucket"]
+        cov = left_obj["cov"]
+        identity = left_obj["identity"]  # Ensure this key is consistent
+        cov_mode = left_obj["cov_mode"]
+        mask = left_obj["mask"]
+        mask_lower_case = left_obj["mask_lower_case"]
+        threads = left_obj["threads"]
+        sample = left_obj["sample"]  
+        remote_path = left_obj["remote_path"]
+        tmpdir = left_obj["tmpdir"] or None
+
+        # Set working directory
+        tmpdir = tmpdir or os.path.realpath(tempfile.gettempdir())
+        os.chdir(tmpdir)
+
+        # Download files and set up local environment
+        left_hits = str(utils._get_path(left_obj["obj"]))
+        left_centroids = left_hits.replace('.hits', '.centroids')
+        right_hits = str(utils._get_path(right_obj["obj"]))
+        right_centroids = right_hits.replace('.hits', '.centroids')
+        utils._download_file(config, bucket, left_centroids, os.path.join(tmpdir, str(pair_id)+"left.centroids"))
+        utils._download_file(config, bucket, right_centroids, os.path.join(tmpdir, str(pair_id)+"right.centroids"))
+
+        # Create a new sub-directory for MMSEQS2 temporary files
+        out_prefix = os.path.join(tmpdir, str(pair_id))
+        mmseqs_tmp_dir = os.path.join(tmpdir, out_prefix)
+        if os.path.exists(mmseqs_tmp_dir):
+            shutil.rmtree(mmseqs_tmp_dir) 
+        os.makedirs(mmseqs_tmp_dir)
+
+        # write concatenated centroids, sorted by size 
+        records = {}
+        fasta_files = [os.path.join(tmpdir, str(pair_id)+"left.centroids"), os.path.join(tmpdir, str(pair_id)+"right.centroids")]
+        # for f in fasta_files:
+        #     for rec in seq.read_fasta(f):
+        #         records[rec[0]] = rec[1]
+        #records = dict(sorted(records.items(), key=lambda item: mmseqs_utils.get_size_from_key(item[0]), reverse=True))
+        joined_centroids = out_prefix+".joined.fasta"
+        utils.concat_files(fasta_files, joined_centroids)
+        # os.remove(os.path.join(tmpdir, str(pair_id)+"left.centroids"))
+        # os.remove(os.path.join(tmpdir, str(pair_id)+"right.centroids"))
+        #seq.write_fasta(records, joined_centroids)
+
+        # run clustering on joined centroids 
+        cmd = [
+            "mmseqs",
+            "easy-linclust",
+            joined_centroids,
+            out_prefix,
+            mmseqs_tmp_dir,
+            "--min-seq-id", str(identity),
+            "--add-self-matches", "0",
+            "-c", str(cov),
+            "--cov-mode", str(cov_mode),
+            "--createdb-mode", "0",
+            "--mask", str(int(mask)),
+            "--mask-lower-case", str(int(mask_lower_case)),
+            "--threads", str(threads), 
+            "--remove-tmp-files", "1"
+        ]
+        proc = sp.Popen(cmd, stderr=sp.STDOUT, stdout=sp.PIPE, close_fds=True)
+        res = proc.communicate()[0].decode("utf-8")
+        print(" ".join(cmd))
+        print(res)
+        
+        # Parse outputs into common hits-table format
+        os.remove(joined_centroids)
+        hits, centroids = mmseqs_utils.parse_mmseqs(out_prefix + "_cluster.tsv", out_prefix + "_rep_seq.fasta")
+        # os.remove(out_prefix + "_cluster.tsv")
+        # os.remove(out_prefix + "_rep_seq.fasta")
+        # os.remove(out_prefix + "_all_seqs.fasta")
+
+        # Upload hits results 
+        int_hits_path = os.path.join(out_prefix + ".int.h")
+        utils._download_file(config, bucket, left_hits, os.path.join(tmpdir, str(pair_id)+"left.hits"))
+        utils._download_file(config, bucket, right_hits, os.path.join(tmpdir, str(pair_id)+"right.hits"))
+        mmseqs_utils.write_hits(hits, int_hits_path)
+        joined_hits = mmseqs_utils.make_merged_hits_table(os.path.join(tmpdir, str(pair_id)+"left.hits"),
+                                                          os.path.join(tmpdir, str(pair_id)+"right.hits"),
+                                                          int_hits_path)
+        # os.remove(int_hits_path)
+        # os.remove(os.path.join(tmpdir, str(pair_id)+"left.hits"))
+        # os.remove(os.path.join(tmpdir, str(pair_id)+"right.hits"))
+        hits_remote_path = os.path.join(remote_path, str(pair_id)+ ".hits")
+        hits_temp_path = os.path.join(tmpdir, str(pair_id)+"joined.hits")
+        mmseqs_utils.write_hits(joined_hits, hits_temp_path)
+        utils._upload_file(config, 
+                            bucket, 
+                            hits_remote_path, 
+                            os.path.join(tmpdir, str(pair_id)+"joined.hits"))
+        # os.remove(hits_temp_path)
+        
+        # upload centroids 
+        centroids_temp_path = os.path.join(tmpdir, str(pair_id)+"joined.centroids")
+        centroids_remote_path = os.path.join(remote_path, str(pair_id)+".centroids")
+        seq.write_fasta(centroids, centroids_temp_path)
+        utils._upload_file(config, 
+                            bucket, 
+                            centroids_remote_path, 
+                            centroids_temp_path)
+        centroids_num, cluster_depth = mmseqs_utils.get_cluster_info(centroids_temp_path)
+        # os.remove(centroids_temp_path)
+        shutil.rmtree(mmseqs_tmp_dir) 
+
+        # delete left and right files from buckets 
+        for f in [left_hits, left_centroids, right_hits, right_centroids]:
+            utils._delete_file(config, bucket, f)
+            
+        return {
+            "chunk": pair_id,
+            "chunk_id": pair_id,
+            "sample": sample, 
+            "centroid_temp_path": centroids_remote_path,
+            "hits_temp_path": hits_remote_path,
+            "mean_depth_merged": cluster_depth,
+            "clusters_merged": centroids_num
+        }

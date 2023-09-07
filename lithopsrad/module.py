@@ -197,4 +197,61 @@ class Module:
         - str: Next line from the file.
         """
         yield from utils._stream_file(self.lithops_config, self.bucket, remote_path)
+
+
+    def delete_file(self, remote_path):
+        """
+        Delete a file from the specified bucket using lithops storage.
+
+        Args:
+        - remote_path (str): The path in the remote storage to delete the file.
+
+        Returns:
+        - bool: True if deletion is successful, False otherwise.
+        """
+        print(f"Deleting file {remote_path}... ", end='', flush=True)
+        
+        # Check if the file exists in remote storage
+        exists = utils._remote_file_exists(self.lithops_config, self.bucket, remote_path)
+        
+        if not exists:
+            print("File does not exist. Skipping.")
+            return False
+
+        success = utils._delete_file(self.lithops_config, self.bucket, remote_path)
+        if success:
+            print("Done.")
+            return True
+        else:
+            print("Failed.")
+            return False
+
+
+    def rename_file(self, old_remote_path, new_remote_path):
+        """
+        Rename (or move) a file within the same bucket using lithops storage.
+
+        Args:
+        - old_remote_path (str): The old path in the remote storage.
+        - new_remote_path (str): The new path in the remote storage.
+
+        Returns:
+        - CloudObject: The CloudObject pointing to the renamed file.
+        """
+        print(f"Renaming file from {old_remote_path} to {new_remote_path}... ", end='', flush=True)
+        
+        # Check if the file exists in remote storage
+        exists = utils._remote_file_exists(self.lithops_config, self.bucket, old_remote_path)
+        
+        if not exists:
+            print("Old file does not exist. Skipping.")
+            return False
+
+        success = utils._rename_file(self.lithops_config, self.bucket, old_remote_path, new_remote_path)
+        if success:
+            print("Done.")
+            return utils._get_cloudobject(self.lithops_config, self.bucket, new_remote_path)
+        else:
+            print("Failed.")
+            return None
     

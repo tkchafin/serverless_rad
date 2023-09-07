@@ -3,12 +3,14 @@ import sys
 
 import json
 import pandas as pd 
+import traceback
 
 # import modules 
 from lithopsrad.fastq_chunker import FASTQChunker
 from lithopsrad.fastq_filter import FASTQFilter
 from lithopsrad.fastq_derep import FASTQDerep
 from lithopsrad.cluster_map import ClusterMap
+from lithopsrad.cluster_merge import ClusterMerge
 
 def step_handler(step_name):
     def decorator(func):
@@ -28,6 +30,7 @@ def step_handler(step_name):
 
             except Exception as e:
                 print(f"Pipeline execution failed during {step_name}: {str(e)}")
+                print(traceback.format_exc())
         return wrapper
     return decorator
 
@@ -43,11 +46,14 @@ class PipelineManager:
         """
         Execute the pipeline.
         """
+        # fastq processing 
         self.run_fastq_chunker()
         self.run_fastq_filter()
         self.run_fastq_derep()
 
+        # within-sample clustering 
         self.run_clust_within()
+        self.run_clustmerge_within()
 
         # clustermap
         # clustermerge 
@@ -60,13 +66,12 @@ class PipelineManager:
         # calling 
         # locus/catalog filter 
 
+        # TODO: Implement cleanup() methods in relevant steps to remove intermediate files from bucket 
 
-        merged_df = self.results["FASTQChunker"]
-        for step, result in self.results.items():
-            if step != "FASTQChunker":  # as we've already initialized with this
-                merged_df = pd.merge(merged_df, result, on="chunk", how="outer")
 
-        print(merged_df)
+        sample_summary, chunk_summary = self.summarize_results()
+        print(chunk_summary)
+        print(sample_summary)
 
 
     @step_handler("FASTQChunker")
@@ -95,6 +100,42 @@ class PipelineManager:
         module.validate()
         return module
 
+    @step_handler("ClusterMergeWithin")
+    def run_clustmerge_within(self):
+        module = ClusterMerge(self.lithops_config, self.runtime_config, mode="clust_within")
+        module.validate()
+        return module
+
+
+    def summarize_results(self):
+        """
+        Merges results into sample_summary and chunk_summary dataframes.
+        Assumes the existence of self.results populated with dataframes.
+        Returns: sample_summary and chunk_summary DataFrames
+        """
+        
+        # 1. Initialize the sample_summary and chunk_summary dataframes using the data from FASTQChunker.
+        fastq_chunker_df = self.results["FASTQChunker"].copy()
+
+        # chunk_summary initialization
+        chunk_summary = fastq_chunker_df
+
+        # sample_summary initialization
+        sample_grouped = fastq_chunker_df.groupby('sample').agg({
+            'chunk': 'count',
+            'size': 'sum'
+        }).rename(columns={'chunk': 'chunks'}).reset_index()
+        sample_summary = sample_grouped[['sample', 'chunks', 'size']]
+
+        # 2. Iterate over each result in self.results
+        for step, result in self.results.items():
+            if step != "FASTQChunker":
+                if 'sample' in result.columns:
+                    sample_summary = pd.merge(sample_summary, result, on="sample", how="outer")
+                if 'chunk' in result.columns:
+                    chunk_summary = pd.merge(chunk_summary, result, on="chunk", how="outer")
+
+        return sample_summary, chunk_summary
 
 
     def get_params_from_json(self):

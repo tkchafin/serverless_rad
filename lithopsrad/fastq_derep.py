@@ -55,7 +55,7 @@ class FASTQDerep(Module):
         prefix = os.path.splitext(tmp_path)[0]
         base = os.path.basename(prefix)
         fout = base + ".derep"
-        label = base.split("_")[-1] + "_d"
+        label = base.split(".")[0] + "_d"
 
         # 2. Dereplicate using vsearch
         cmd = [

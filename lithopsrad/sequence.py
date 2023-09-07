@@ -1,19 +1,29 @@
 import os
 import sys
 import re
+import io
+
+def extract_size(header):
+    """
+    Extracts the size value from the fasta header.
+    """
+    size_tag = next((tag for tag in header.split(';') if tag.startswith('size=')), None)
+    if size_tag:
+        return int(size_tag.split('=')[1])
+    return 0
 
 
 def write_fasta(seqs, fas):
     with open(fas, 'w') as fh:
         try:
-            for a in seqs:
-                line = ">" + str(a[0]) + "\n" + a[1] + "\n"
+            for seq_id, sequence in seqs.items():
+                line = ">" + str(seq_id) + "\n" + sequence + "\n"
                 fh.write(line)
         except IOError as e:
-            print("Could not read file:",e)
+            print("Could not read file:", e)
             sys.exit(1)
         except Exception as e:
-            print("Unexpected error:",e)
+            print("Unexpected error:", e)
             sys.exit(1)
 
 

@@ -6,6 +6,19 @@ from lithops.storage import Storage
 from lithops.storage.utils import CloudObject
 
 
+def concat_files(files, output_file):
+    with open(output_file, 'w') as out:
+        for file in files:
+            with open(file, 'r') as f:
+                out.write(f.read())
+
+
+def _get_path(obj):
+    path = obj['Key'] if isinstance(obj, dict) else obj.key
+    return(path)
+    #return os.path.splitext(path)[0]
+
+
 def _check_remote_files(config, bucket, prefix, subset=None):
     """
     Check if a subset of remote files under a given prefix is reachable using the Lithops Storage API.
@@ -97,6 +110,51 @@ def _list_remote_files(config, bucket, prefix=None):
 def _cloudobject_url(cobj):
     path = f'{cobj.backend}://{cobj.bucket}/{cobj.key}'
     return path
+
+
+def _delete_file(config, bucket, remote_path):
+    """
+    Delete a file from the specified bucket using lithops storage.
+    
+    Args:
+    - config (dict): Lithops configuration.
+    - bucket (str): The storage bucket name.
+    - remote_path (str): The path in the remote storage to delete the file.
+    
+    Returns:
+    - bool: True if deletion is successful, False otherwise.
+    """
+    try:
+        storage = Storage(config=config)
+        storage.delete_object(bucket, remote_path)
+        return True
+    except Exception as e:
+        print(f"Error deleting {remote_path} from {bucket}: {e}")
+        return False
+
+
+def _rename_file(config, bucket, old_remote_path, new_remote_path):
+    """
+    Rename (or move) a file within the same bucket using lithops storage.
+    
+    Args:
+    - config (dict): Lithops configuration.
+    - bucket (str): The storage bucket name.
+    - old_remote_path (str): The old path in the remote storage.
+    - new_remote_path (str): The new path in the remote storage.
+    
+    Returns:
+    - bool: True if rename is successful, False otherwise.
+    """
+    try:
+        storage = Storage(config=config)
+        data = storage.get_object(bucket, old_remote_path)
+        storage.put_object(bucket, new_remote_path, data)
+        storage.delete_object(bucket, old_remote_path)
+        return True
+    except Exception as e:
+        print(f"Error renaming {old_remote_path} to {new_remote_path} in {bucket}: {e}")
+        return False
 
 
 def _remote_file_exists(config, bucket, remote_path):

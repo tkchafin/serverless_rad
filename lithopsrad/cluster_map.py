@@ -71,7 +71,7 @@ class ClusterMap(Module):
         # Run mmseqs
         cmd = [
             "mmseqs",
-            "easy-linclust",  # TODO: Modify as needed.
+            "easy-linclust", 
             tmp_path,
             out_prefix,
             mmseqs_tmp_dir,
@@ -80,9 +80,10 @@ class ClusterMap(Module):
             "--cov-mode", str(cov_mode),
             "--mask", str(int(mask)),
             "--createdb-mode", "0",
+            "--add-self-matches", "0",
             "--mask-lower-case", str(int(mask_lower_case)),
             "--threads", str(threads), 
-            "--remove-tmp-files"
+            "--remove-tmp-files", "1"
         ]
         
         proc = sp.Popen(cmd, stderr=sp.STDOUT, stdout=sp.PIPE, close_fds=True)
@@ -98,14 +99,13 @@ class ClusterMap(Module):
         # Write hits and centroids
         hits_path = os.path.join(mmseqs_tmp_dir, os.path.basename(out_prefix) + ".hits")
         centroids_path = os.path.join(mmseqs_tmp_dir, os.path.basename(out_prefix) + ".centroids")
-        hout = os.path.join(remote_path, os.path.basename(out_prefix) + ".hits")
-        cout = os.path.join(remote_path, os.path.basename(out_prefix) + ".centroids")
+        hout = os.path.join(remote_path, os.path.basename(out_prefix) + ".temp.hits")
+        cout = os.path.join(remote_path, os.path.basename(out_prefix) + ".temp.centroids")
         
         # write files and grab results to report back 
         mmseqs_utils.write_hits(hits, hits_path)
         seq.write_fasta(centroids, centroids_path)
-        centroids_num = seq.count_fastq_records(file_path=centroids_path)
-        cluster_depth = mmseqs_utils.average_cluster_size(file_path=hits_path)
+        centroids_num, cluster_depth = mmseqs_utils.get_cluster_info(centroids_path)
 
         # Upload the results
         utils._upload_file(config, bucket, hout, hits_path)
@@ -119,5 +119,5 @@ class ClusterMap(Module):
         return {
             "chunk": out_prefix,
             "mean_depth_pre": cluster_depth,
-            "centroids": centroids_num
+            "clusters": centroids_num
         }
