@@ -25,7 +25,7 @@ class ClusterMerge(Module):
         self.input_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["clust"]))
         self.output_path = os.path.join(self.run_path, utils.fix_dir_name(self.runtime_config["remote_paths"]["clust"]))
 
-        # runtime params for cluster_map 
+        # runtime params for cluster_merge_pair
         self.cov = self.runtime_config[mode]["cov"]
         self.id = self.runtime_config[mode]["id"]
         self.cov_mode = self.runtime_config[mode]["cov_mode"]
@@ -33,8 +33,13 @@ class ClusterMerge(Module):
         self.mask_lower_case = self.runtime_config[mode]["mask-lower-case"]
         self.threads = self.runtime_config["global"]["nthreads"]
 
+        # runtime params for cluster processing/ filtering 
+        self.min_depth = self.runtime_config[mode]["min_depth"]
+        self.max_depth = self.runtime_config[mode]["max_depth"]
+
         # define function to run 
         self._func = ClusterMerge._cluster_merge_pair
+        self._process_func = ClusterMerge._process_clusters
 
 
     def _get_iterdata(self, obj):
@@ -97,6 +102,34 @@ class ClusterMerge(Module):
         return formatted_iterdata
 
 
+    def _get_process_iterdata(self, data):
+        iterdata = []
+        for item in data:
+            it = {
+                "config": self.lithops_config,
+                "bucket": self.bucket,
+                "remote_path": self.output_path,
+                "tmpdir": self.tmpdir,
+                'min_depth': self.min_depth,
+                'max_depth': self.max_depth,
+                'sample' : item["sample"]
+            }
+            if "hits_temp_path" in item:
+                it.update({
+                    'hits_temp_path':  item['hits_temp_path'],
+                    'centroid_temp_path':  item['centroid_temp_path']
+                })
+            else:
+                hits = str(utils._get_path(item["obj"]))
+                centroids = hits.replace('.hits', '.centroids')
+                it.update({
+                    'hits_temp_path': hits,
+                    'centroid_temp_path':  centroids
+                })
+            iterdata.append(it)
+        return iterdata
+
+
     def run(self):
         # Check if _func is set
         if not self._func:
@@ -134,19 +167,12 @@ class ClusterMerge(Module):
         if len(queue) != num_samples:
             raise Exception(f"Expected number of result items to be {num_samples}, but got {len(results)}")
 
-        # Change file names
-        for item in queue:
-            centroid_new_path = os.path.join(self.output_path, f"{item['sample']}.centroids")
-            hits_new_path = os.path.join(self.output_path, f"{item['sample']}.hits")
-            #TODO: Need to handle the case that a sample was only a single chunk here!!
-            self.rename_file(item["centroid_temp_path"], centroid_new_path)
-            self.rename_file(item["hits_temp_path"], hits_new_path)
+        # Map process_cluster step 
+        with FunctionExecutor(config=self.lithops_config) as fexec:
+            process_iterdata = self._get_process_iterdata(queue)
+            fexec.map(self._process_func, process_iterdata)
+            self._results = fexec.get_result()
 
-        # Format results table
-        formatted_results = [{"sample": item["sample"],
-                            "mean_depth_merged": item["mean_depth_merged"],
-                            "clusters_merged": item["clusters_merged"]} for item in queue]
-        self._results = formatted_results
 
     def _generate_filename(self, input, length=15):
         """Generate a unique filename based on SHA-1 hashing."""
@@ -178,17 +204,8 @@ class ClusterMerge(Module):
         print()
         return kept, iterdata
 
-
-# !!!TODO!!!
-# Still something wrong, seems like there are centroids that aren't making it into the _rep_seq file from mmseqs
-# May have to manually parse the left/right centroids and make sure everything makes it into the output file 
-
-
     @staticmethod 
     def _cluster_merge_pair(left_obj, right_obj, pair_id):
-
-        print(left_obj)
-        print(right_obj)
 
         # Extract main parameters from left_obj
         config = left_obj["config"]
@@ -223,7 +240,7 @@ class ClusterMerge(Module):
         os.makedirs(mmseqs_tmp_dir)
 
         # write concatenated centroids, sorted by size 
-        records = {}
+        # records = {}
         fasta_files = [os.path.join(tmpdir, str(pair_id)+"left.centroids"), os.path.join(tmpdir, str(pair_id)+"right.centroids")]
         # for f in fasta_files:
         #     for rec in seq.read_fasta(f):
@@ -231,8 +248,8 @@ class ClusterMerge(Module):
         #records = dict(sorted(records.items(), key=lambda item: mmseqs_utils.get_size_from_key(item[0]), reverse=True))
         joined_centroids = out_prefix+".joined.fasta"
         utils.concat_files(fasta_files, joined_centroids)
-        # os.remove(os.path.join(tmpdir, str(pair_id)+"left.centroids"))
-        # os.remove(os.path.join(tmpdir, str(pair_id)+"right.centroids"))
+        os.remove(os.path.join(tmpdir, str(pair_id)+"left.centroids"))
+        os.remove(os.path.join(tmpdir, str(pair_id)+"right.centroids"))
         #seq.write_fasta(records, joined_centroids)
 
         # run clustering on joined centroids 
@@ -260,9 +277,9 @@ class ClusterMerge(Module):
         # Parse outputs into common hits-table format
         os.remove(joined_centroids)
         hits, centroids = mmseqs_utils.parse_mmseqs(out_prefix + "_cluster.tsv", out_prefix + "_rep_seq.fasta")
-        # os.remove(out_prefix + "_cluster.tsv")
-        # os.remove(out_prefix + "_rep_seq.fasta")
-        # os.remove(out_prefix + "_all_seqs.fasta")
+        os.remove(out_prefix + "_cluster.tsv")
+        os.remove(out_prefix + "_rep_seq.fasta")
+        os.remove(out_prefix + "_all_seqs.fasta")
 
         # Upload hits results 
         int_hits_path = os.path.join(out_prefix + ".int.h")
@@ -272,9 +289,9 @@ class ClusterMerge(Module):
         joined_hits = mmseqs_utils.make_merged_hits_table(os.path.join(tmpdir, str(pair_id)+"left.hits"),
                                                           os.path.join(tmpdir, str(pair_id)+"right.hits"),
                                                           int_hits_path)
-        # os.remove(int_hits_path)
-        # os.remove(os.path.join(tmpdir, str(pair_id)+"left.hits"))
-        # os.remove(os.path.join(tmpdir, str(pair_id)+"right.hits"))
+        os.remove(int_hits_path)
+        os.remove(os.path.join(tmpdir, str(pair_id)+"left.hits"))
+        os.remove(os.path.join(tmpdir, str(pair_id)+"right.hits"))
         hits_remote_path = os.path.join(remote_path, str(pair_id)+ ".hits")
         hits_temp_path = os.path.join(tmpdir, str(pair_id)+"joined.hits")
         mmseqs_utils.write_hits(joined_hits, hits_temp_path)
@@ -282,7 +299,7 @@ class ClusterMerge(Module):
                             bucket, 
                             hits_remote_path, 
                             os.path.join(tmpdir, str(pair_id)+"joined.hits"))
-        # os.remove(hits_temp_path)
+        os.remove(hits_temp_path)
         
         # upload centroids 
         centroids_temp_path = os.path.join(tmpdir, str(pair_id)+"joined.centroids")
@@ -293,7 +310,7 @@ class ClusterMerge(Module):
                             centroids_remote_path, 
                             centroids_temp_path)
         centroids_num, cluster_depth = mmseqs_utils.get_cluster_info(centroids_temp_path)
-        # os.remove(centroids_temp_path)
+        os.remove(centroids_temp_path)
         shutil.rmtree(mmseqs_tmp_dir) 
 
         # delete left and right files from buckets 
@@ -309,3 +326,53 @@ class ClusterMerge(Module):
             "mean_depth_merged": cluster_depth,
             "clusters_merged": centroids_num
         }
+    
+    def _process_clusters(config, bucket, remote_path, tmpdir, min_depth, max_depth, sample, hits_temp_path, centroid_temp_path):
+        # Set working directory
+        tmpdir = tmpdir or os.path.realpath(tempfile.gettempdir())
+        os.chdir(tmpdir)
+
+        # Dictionary to store valid FASTA records
+        valid_records = {}
+        current_header = None
+        
+        for line in utils._stream_file(config, bucket, centroid_temp_path):
+            # If line is a header
+            if line.startswith('>'):
+                size = mmseqs_utils.get_size_from_key(line)
+                
+                # If size is within range
+                if min_depth <= size <= max_depth:
+                    current_header = line
+                    valid_records[current_header] = ""
+                else:
+                    current_header = None
+            elif current_header:  # If the line is part of a valid record
+                valid_records[current_header] += line + '\n'
+
+        # Writing valid FASTA records to a local file
+        new_temp_file = os.path.join(tmpdir, f"{sample}_temp_centroids.fasta")
+        seq.write_fasta(valid_records, new_temp_file)
+
+        # Parse cluster number and sizes from the new file
+        centroids_num, cluster_depth = mmseqs_utils.get_cluster_info(new_temp_file)
+
+        # Upload new centroids file 
+        centroids_new_path = os.path.join(remote_path, f"{sample}.centroids")
+        utils._delete_file(config, bucket, centroid_temp_path)
+        utils._upload_file(config, bucket, centroids_new_path, new_temp_file)
+        os.remove(new_temp_file)
+
+        # Rename the old hits file
+        hits_new_path = os.path.join(remote_path, f"{sample}.hits")
+        utils._rename_file(config, bucket, hits_temp_path, hits_new_path)
+
+        # Format the results
+        formatted_results = {
+            "sample": sample,
+            "mean_depth_merged": cluster_depth,
+            "clusters_merged": centroids_num
+        }
+        
+        return formatted_results
+

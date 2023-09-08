@@ -140,7 +140,7 @@ def read_hits(infile):
         return hits
 
 
-def parse_mmseqs(tmp_hits, tmp_centroids):
+def parse_mmseqs(tmp_hits, tmp_centroids, count_members=False):
     hits = dict()
     depths = dict()
     centroids = {}
@@ -159,8 +159,12 @@ def parse_mmseqs(tmp_hits, tmp_centroids):
             if hit_spl[0] not in hits:
                 hits[hit_spl[0]] = list()
             hits[hit_spl[0]].append(q_spl[0])
-            # update depth for centroid
-            depths[hit_spl[0]] += int(q_spl[1])
+            
+            # update depth for centroid based on the chosen option
+            if count_members:
+                depths[hit_spl[0]] += 1
+            else:
+                depths[hit_spl[0]] += int(q_spl[1])
 
     # adjust fasta headers with new depths
     for header, sequence in seq.read_fasta(tmp_centroids):
@@ -177,6 +181,7 @@ def parse_mmseqs(tmp_hits, tmp_centroids):
             hits[h_spl[0]] = []
 
     return hits, centroids
+
 
 
 def write_hits(hits, outfile):

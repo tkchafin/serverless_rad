@@ -31,6 +31,7 @@ def step_handler(step_name):
             except Exception as e:
                 print(f"Pipeline execution failed during {step_name}: {str(e)}")
                 print(traceback.format_exc())
+                sys.exit()
         return wrapper
     return decorator
 
