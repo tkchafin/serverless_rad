@@ -6,6 +6,20 @@ from lithops.storage import Storage
 from lithops.storage.utils import CloudObject
 
 
+def touch_file(filename):
+    """
+    Creates an empty file with the given filename.
+
+    Args:
+    - filename (str): Path to the file to be created.
+
+    Returns:
+    None
+    """
+    with open(filename, 'a') as f:
+        pass
+
+
 def concat_files(files, output_file):
     with open(output_file, 'w') as out:
         for file in files:

@@ -2,6 +2,7 @@ import os
 import sys
 
 import json
+import numpy as np
 import pandas as pd 
 import traceback
 
@@ -56,12 +57,8 @@ class PipelineManager:
         self.run_clust_within()
         self.run_clustmerge_within()
 
-        # clustermap
-        # clustermerge 
-        # clusterfilter 
-
-        #clustermap, among
-        #clustermerge, among 
+        # among-sample cluster merge
+        self.run_clustmerge_across()
         
         # alignment
         # calling 
@@ -106,6 +103,12 @@ class PipelineManager:
         module = ClusterMerge(self.lithops_config, self.runtime_config, mode="clust_within")
         module.validate()
         return module
+    
+    @step_handler("ClusterMergeAcross")
+    def run_clustmerge_across(self):
+        module = ClusterMerge(self.lithops_config, self.runtime_config, mode="clust_across")
+        module.validate()
+        return module
 
 
     def summarize_results(self):
@@ -115,7 +118,7 @@ class PipelineManager:
         Returns: sample_summary and chunk_summary DataFrames
         """
         
-        # 1. Initialize the sample_summary and chunk_summary dataframes using the data from FASTQChunker.
+        # Initialize the sample_summary and chunk_summary dataframes using the data from FASTQChunker.
         fastq_chunker_df = self.results["FASTQChunker"].copy()
 
         # chunk_summary initialization
@@ -128,7 +131,12 @@ class PipelineManager:
         }).rename(columns={'chunk': 'chunks'}).reset_index()
         sample_summary = sample_grouped[['sample', 'chunks', 'size']]
 
-        # 2. Iterate over each result in self.results
+        # PLaceholder for catalog 
+        if 'catalog' not in sample_summary['sample'].values:
+            default_catalog = {'sample': 'catalog', 'chunks': np.nan, 'size': np.nan}
+            sample_summary = pd.concat([sample_summary, pd.DataFrame([default_catalog])], ignore_index=True)
+
+        # Iterate over each result in self.results
         for step, result in self.results.items():
             if step != "FASTQChunker":
                 if 'sample' in result.columns:

@@ -41,6 +41,8 @@ class ClusterMerge(Module):
         self._func = ClusterMerge._cluster_merge_pair
         self._process_func = ClusterMerge._process_clusters
 
+        self.mode=mode
+
 
     def _get_iterdata(self, obj):
         data = super()._get_iterdata(obj)
@@ -50,17 +52,16 @@ class ClusterMerge(Module):
             "cov_mode": self.cov_mode,
             "mask": self.mask,
             "mask_lower_case": self.mask_lower_case,
-            "threads": self.threads
+            "threads": self.threads,
+            "mode" : self.mode,
+            "sample_file": True
         })
         chunk = os.path.basename(os.path.splitext(os.path.basename(obj))[0]).replace(".temp", "")
-        print(chunk)
         try:
             chunk_id, sample = chunk.split("_", 1)
         except:
             chunk_id = chunk
             sample = chunk
-        print(chunk_id)
-        print(sample)
         data.update({
             "chunk": chunk, 
             "chunk_id": chunk_id,
@@ -93,6 +94,8 @@ class ClusterMerge(Module):
                 "chunk": item['chunk'],
                 "chunk_id": item['chunk_id'],
                 "sample": item['sample'],
+                "mode" : self.mode,
+                "sample_file": False,
                 "mean_depth_merged": item['mean_depth_merged'],
                 "clusters_merged": item['clusters_merged'], 
                 "hits_temp_path" : item["hits_temp_path"],
@@ -137,9 +140,16 @@ class ClusterMerge(Module):
 
         # get chunks to process 
         chunks = self.list_remote_files(self.input_path)
-        # create iterdata 
-        iterdata = [self._get_iterdata(chunk) for chunk in chunks if "temp" in str(chunk) and "hits" in str(chunk)]
-        num_samples = len(set(data['sample'] for data in iterdata))
+        if self.mode == "clust_within":
+            # create iterdata 
+            iterdata = [self._get_iterdata(chunk) for chunk in chunks if "temp" in str(chunk) and "hits" in str(chunk)]
+            num_samples = len(set(data['sample'] for data in iterdata))
+        else:
+            # create iterdata 
+            iterdata = [self._get_iterdata(chunk) for chunk in chunks if "temp" not in str(chunk) and "hits" in str(chunk)]
+            for it in iterdata:
+                it["sample"] = "catalog"
+            num_samples = 1
 
         # Limit the iterdata to pairs for binary reduction and keep track of remaining pairs to be processed
         queue, pairs = self._binary_reducer_iterdata(iterdata)
@@ -179,6 +189,8 @@ class ClusterMerge(Module):
         hashed_name = hashlib.sha1(str(input).encode()).hexdigest()[:length]
         return f"{hashed_name}"
 
+    # TODO: Would make better use of lambdas if we calculate sizes of each chunk 
+    # and group reduce steps to contain as many chunks as possible, rather than binary reduce
     def _binary_reducer_iterdata(self, queue):
         print("BINARY_REDUCER")
         iterdata = []
@@ -211,6 +223,7 @@ class ClusterMerge(Module):
         config = left_obj["config"]
         bucket = left_obj["bucket"]
         cov = left_obj["cov"]
+        mode = left_obj["mode"]
         identity = left_obj["identity"]  # Ensure this key is consistent
         cov_mode = left_obj["cov_mode"]
         mask = left_obj["mask"]
@@ -239,18 +252,13 @@ class ClusterMerge(Module):
             shutil.rmtree(mmseqs_tmp_dir) 
         os.makedirs(mmseqs_tmp_dir)
 
-        # write concatenated centroids, sorted by size 
-        # records = {}
+        # write concatenated centroids
+        # TODO: Should we sort centroids before clustering?
         fasta_files = [os.path.join(tmpdir, str(pair_id)+"left.centroids"), os.path.join(tmpdir, str(pair_id)+"right.centroids")]
-        # for f in fasta_files:
-        #     for rec in seq.read_fasta(f):
-        #         records[rec[0]] = rec[1]
-        #records = dict(sorted(records.items(), key=lambda item: mmseqs_utils.get_size_from_key(item[0]), reverse=True))
         joined_centroids = out_prefix+".joined.fasta"
         utils.concat_files(fasta_files, joined_centroids)
         os.remove(os.path.join(tmpdir, str(pair_id)+"left.centroids"))
         os.remove(os.path.join(tmpdir, str(pair_id)+"right.centroids"))
-        #seq.write_fasta(records, joined_centroids)
 
         # run clustering on joined centroids 
         cmd = [
@@ -276,16 +284,34 @@ class ClusterMerge(Module):
         
         # Parse outputs into common hits-table format
         os.remove(joined_centroids)
-        hits, centroids = mmseqs_utils.parse_mmseqs(out_prefix + "_cluster.tsv", out_prefix + "_rep_seq.fasta")
+        if mode == "clust_within":
+            hits, centroids = mmseqs_utils.parse_mmseqs(out_prefix + "_cluster.tsv", 
+                                                        out_prefix + "_rep_seq.fasta")
+        else:
+            # if clustering across, depth is calculated as number of centroids
+            hits, centroids = mmseqs_utils.parse_mmseqs(out_prefix + "_cluster.tsv", 
+                                                        out_prefix + "_rep_seq.fasta",
+                                                        count_members = True)
         os.remove(out_prefix + "_cluster.tsv")
         os.remove(out_prefix + "_rep_seq.fasta")
         os.remove(out_prefix + "_all_seqs.fasta")
 
         # Upload hits results 
         int_hits_path = os.path.join(out_prefix + ".int.h")
-        utils._download_file(config, bucket, left_hits, os.path.join(tmpdir, str(pair_id)+"left.hits"))
-        utils._download_file(config, bucket, right_hits, os.path.join(tmpdir, str(pair_id)+"right.hits"))
         mmseqs_utils.write_hits(hits, int_hits_path)
+        if mode == "clust_within":
+            utils._download_file(config, bucket, left_hits, os.path.join(tmpdir, str(pair_id)+"left.hits"))
+            utils._download_file(config, bucket, right_hits, os.path.join(tmpdir, str(pair_id)+"right.hits"))
+        else:
+            # if clustering across, ignore within-sample hits by creating empty hits files 
+            if left_obj["sample_file"]:
+                utils.touch_file(str(pair_id)+"left.hits")
+            else:
+                utils._download_file(config, bucket, left_hits, os.path.join(tmpdir, str(pair_id)+"left.hits"))
+            if right_obj["sample_file"]:
+                utils.touch_file(str(pair_id)+"right.hits")
+            else:
+                utils._download_file(config, bucket, right_hits, os.path.join(tmpdir, str(pair_id)+"right.hits"))
         joined_hits = mmseqs_utils.make_merged_hits_table(os.path.join(tmpdir, str(pair_id)+"left.hits"),
                                                           os.path.join(tmpdir, str(pair_id)+"right.hits"),
                                                           int_hits_path)
@@ -314,8 +340,16 @@ class ClusterMerge(Module):
         shutil.rmtree(mmseqs_tmp_dir) 
 
         # delete left and right files from buckets 
-        for f in [left_hits, left_centroids, right_hits, right_centroids]:
-            utils._delete_file(config, bucket, f)
+        if mode == "clust_within":
+            for f in [left_hits, left_centroids, right_hits, right_centroids]:
+                utils._delete_file(config, bucket, f)
+        else:
+            if not left_obj["sample_file"]:
+                for f in [left_hits, left_centroids]:
+                    utils._delete_file(config, bucket, f)
+            if not right_obj["sample_file"]:
+                for f in [right_hits, right_centroids]:
+                    utils._delete_file(config, bucket, f)
             
         return {
             "chunk": pair_id,
@@ -339,6 +373,7 @@ class ClusterMerge(Module):
         for line in utils._stream_file(config, bucket, centroid_temp_path):
             # If line is a header
             if line.startswith('>'):
+                line = line.replace(">","")
                 size = mmseqs_utils.get_size_from_key(line)
                 
                 # If size is within range
